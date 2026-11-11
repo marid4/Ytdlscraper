@@ -1,0 +1,8 @@
+set -e
+          # 1. Ekstrak otomatis file .zip apa pun (misal CrbLauncher.zip atau CrbLauncher (1).zip) yang diupload ke repo GitHub
+          for z in *.zip; do
+            if [ -f "$z" ]; then
+              echo "Extracting uploaded archive: $z"
+              unzip -q -o "$z"
+            fi
+          done
