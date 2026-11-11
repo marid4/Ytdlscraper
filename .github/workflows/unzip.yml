@@ -1,0 +1,6 @@
+for z in *.zip; do
+            if [ -f "$z" ]; then
+              echo "Extracting uploaded archive: $z"
+              unzip -q -o "$z"
+            fi
+          done
