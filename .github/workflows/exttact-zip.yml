@@ -12,7 +12,7 @@ on:
       zip_path:
         description: 'ytdl-apk-project.zip'
         required: true
-        default: 'ytdl-apk-project.zip'
+        default: 'archive.zip'
       output_dir:
         description: 'main'
         required: true
@@ -33,7 +33,7 @@ jobs:
       # 2. Ekstrak file ZIP menggunakan perintah unzip bawaan runner Ubuntu
       - name: Extract ZIP File
         env:
-          ZIP_FILE: ${{ github.event.inputs.zip_path || 'ytdl-apk-project.zip' }}
+          ZIP_FILE: ${{ github.event.inputs.zip_path || 'archive.zip' }}
           DEST_DIR: ${{ github.event.inputs.output_dir || './main' }}
         run: |
           if [ ! -f "$ZIP_FILE" ]; then
