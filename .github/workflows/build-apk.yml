@@ -12,9 +12,14 @@ jobs:
     name: Compile Python to Android APK
     runs-on: ubuntu-22.04
 
+    env:
+      APP_ANDROID_ACCEPT_SDK_LICENSE: "1"
+      BUILDOZER_WARN_ON_ROOT: "0"
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Extract ZIP Archive (If Present)
         run: |
@@ -23,31 +28,33 @@ jobs:
             echo "Mengekstrak $z..."
             unzip -o "$z" -d .
           done
-          # Jika hasil ekstrak berada di dalam subfolder dan buildozer.spec ada di dalamnya, pindahkan ke root
-          if [ ! -f "buildozer.spec" ]; then
-            SPEC_FILE=$(find . -maxdepth 3 -name "buildozer.spec" | head -n 1)
-            if [ -n "$SPEC_FILE" ]; then
-              SPEC_DIR=$(dirname "$SPEC_FILE")
-              echo "Memindahkan isi proyek dari $SPEC_DIR ke root..."
-              shopt -s dotglob
-              mv "$SPEC_DIR"/* .
+
+          if [ ! -f "buildozer.spec" ] && [ ! -f "main.py" ]; then
+            TARGET_FILE=$(find . -maxdepth 3 \( -name "buildozer.spec" -o -name "main.py" \) | head -n 1)
+            if [ -n "$TARGET_FILE" ]; then
+              PROJECT_DIR=$(dirname "$TARGET_FILE")
+              if [ "$PROJECT_DIR" != "." ]; then
+                echo "Memindahkan isi proyek dari $PROJECT_DIR ke root..."
+                cp -rf "$PROJECT_DIR"/. .
+              fi
             fi
           fi
+          ls -la
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Cache Buildozer Directories
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-py311-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-${{ runner.os }}-
+            buildozer-py311-${{ runner.os }}-
 
       - name: Install System & Buildozer Dependencies
         run: |
@@ -68,19 +75,86 @@ jobs:
             cmake \
             libffi-dev \
             libssl-dev \
+            libltdl-dev \
+            libsqlite3-dev \
+            libbz2-dev \
+            liblzma-dev \
             automake \
             gettext \
-            ccache
-          python3 -m pip install --upgrade pip setuptools wheel
-          python3 -m pip install buildozer Cython==0.29.33 virtualenv
+            patch \
+            lbzip2 \
+            ccache \
+            lld \
+            clang
+          sudo update-java-alternatives -s java-1.17.0-openjdk-amd64 || true
+          echo "/usr/lib/jvm/java-17-openjdk-amd64/bin" >> $GITHUB_PATH
+          python3 -m pip install --upgrade pip "setuptools<70" wheel
+          python3 -m pip install buildozer "Cython==0.29.36" virtualenv
 
-      - name: Build APK with Buildozer
+      - name: Prepare buildozer.spec & Build APK
         run: |
-          yes | buildozer android debug
+          sudo chown -R $USER:$USER .buildozer ~/.buildozer 2>/dev/null || true
+
+          if [ ! -f "buildozer.spec" ]; then
+            echo "buildozer.spec tidak ditemukan, membuat buildozer.spec baru..."
+            buildozer init
+          fi
+
+          if grep -q "^#* *android.accept_sdk_license" buildozer.spec; then
+            sed -i 's/^#* *android.accept_sdk_license.*/android.accept_sdk_license = True/' buildozer.spec
+          else
+            sed -i '/^\[app\]/a android.accept_sdk_license = True' buildozer.spec
+          fi
+
+          python3 - << 'EOF'
+          import re
+          with open("buildozer.spec", "r", encoding="utf-8") as f:
+              content = f.read()
+
+          def fix_reqs(match):
+              prefix, reqs = match.group(1), match.group(2)
+              items = [x.strip() for x in reqs.split(",") if x.strip()]
+              has_py_pin = any(x.startswith("python3==") for x in items)
+              has_hostpy = any(x.startswith("hostpython3") for x in items)
+              new_items = []
+              for item in items:
+                  if item == "python3" and not has_py_pin:
+                      new_items.append("python3==3.11.9")
+                      if not has_hostpy:
+                          new_items.append("hostpython3==3.11.9")
+                  else:
+                      new_items.append(item)
+              return f"{prefix}{', '.join(new_items)}"
+
+          content = re.sub(r"^(\s*requirements\s*=\s*)(.+)$", fix_reqs, content, flags=re.MULTILINE)
+          with open("buildozer.spec", "w", encoding="utf-8") as f:
+              f.write(content)
+          EOF
+
+          grep "^requirements" buildozer.spec || true
+
+          set +e
+          BUILDOZER_LOG_LEVEL=2 buildozer android debug > buildozer_full.log 2>&1 &
+          BUILD_PID=$!
+          while kill -0 $BUILD_PID 2>/dev/null; do
+            grep -E "\[INFO\]|# " buildozer_full.log | tail -n 5
+            sleep 15
+          done
+          wait $BUILD_PID
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "=== 120 BARIS TERAKHIR LOG ERROR BUILDOZER ==="
+            tail -n 120 buildozer_full.log
+            exit $EXIT_CODE
+          fi
+          echo "Build APK berhasil!"
+          ls -la bin/
 
       - name: Upload Compiled APK Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ytscraperplayer-debug-apk
-          path: bin/*.apk
+          path: "**/bin/*.apk"
           if-no-files-found: error
